@@ -1,0 +1,8 @@
+# Dependencias directas comprobadas en el entorno Python 3.12 de esta revisión.
+# PyTorch/Torchvision se instalan primero según CPU o CUDA (consulte README.md).
+numpy==2.5.2
+onvif-zeep==0.2.12
+opencv-python==5.0.0.93
+requests==2.34.2
+ultralytics==8.4.138
+Pillow==12.3.0

@@ -1,0 +1,49 @@
+.env
+.env.*
+!.env.example
+
+# Entornos virtuales locales
+.venv/
+.venv_old/
+venv/
+
+# Cachés y herramientas de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Paquetes, pesos y datos locales o de terceros (en cualquier carpeta)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+datasets/
+dataset/
+data/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Resultados generados por video, detección y telemetría
+runs/
+logs/
+recordings/
+captures/
+*.avi
+*.mp4
+*.mkv
+*.mov
+*.log
+
+# Configuración local de editores y sistema operativo
+.vscode/
+.idea/
+.DS_Store
