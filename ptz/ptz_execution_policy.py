@@ -216,7 +216,7 @@ class PTZExecutionPolicy:
 
 
     def evaluate_manual(
-        self, pan: float, tilt: float, *, armed: bool, faulted: bool,
+        self, pan: float, tilt: float, *, zoom: float = 0.0, armed: bool, faulted: bool,
         backend_connected: bool, capabilities: PTZCapabilities,
         frame_age_ms: float | None, input_age_ms: float | None,
         now: float, last_command_at: float | None,
@@ -229,10 +229,12 @@ class PTZExecutionPolicy:
             (not backend_connected, "backend disconnected"),
             (not self._fresh(frame_age_ms, self.max_frame_age_ms), "frame stale"),
             (not self._fresh(input_age_ms, 250), "manual input expired"),
-            (not all(isfinite(v) and -1.0 <= v <= 1.0 for v in (pan, tilt)),
+            (not all(isfinite(v) and -1.0 <= v <= 1.0 for v in (pan, tilt, zoom)),
              "command outside normalized limits"),
-            (not capabilities.continuous_pan_tilt, "backend lacks continuous pan/tilt"),
-            (pan == 0.0 and tilt == 0.0, "manual control idle"),
+            ((pan != 0.0 or tilt != 0.0) and not capabilities.continuous_pan_tilt,
+             "backend lacks continuous pan/tilt"),
+            (zoom != 0.0 and not capabilities.continuous_zoom, "backend lacks continuous zoom"),
+            (pan == 0.0 and tilt == 0.0 and zoom == 0.0, "manual control idle"),
         ):
             if rejected:
                 return PTZPolicyResult(False, reason, stop_required=True)

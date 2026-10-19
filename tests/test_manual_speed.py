@@ -83,6 +83,25 @@ class ManualSpeedTests(unittest.TestCase):
         self.assertTrue(self.move_automatic().executed)
         self.assertEqual(self.backend.moves[-1], (0.3, -0.3, 0.0))
 
+    def test_manual_zoom_requires_capability_is_limited_and_stops(self):
+        result = self.executor.execute_manual(0, 0, zoom=0.9, frame_age_ms=0, input_age_ms=0)
+        self.assertFalse(result.executed)
+        self.assertIn("lacks continuous zoom", result.reason)
+        self.backend.backend_capabilities = PTZCapabilities(continuous_pan_tilt=True, continuous_zoom=True)
+        self.assertTrue(self.executor.execute_manual(0, 0, zoom=0.9, frame_age_ms=0, input_age_ms=0).executed)
+        self.assertEqual(self.backend.moves[-1], (0, 0, 0.3))
+        self.assertTrue(self.executor.execute_manual(0.2, -0.1, zoom=-0.8, frame_age_ms=0, input_age_ms=0).executed)
+        self.assertEqual(self.backend.moves[-1], (0.2, -0.1, -0.3))
+        self.executor.execute_manual(0, 0, zoom=-0.2, frame_age_ms=0, input_age_ms=251)
+        self.assertEqual(self.executor.last_physical_velocity, (0, 0, 0))
+        self.assertEqual(self.backend.stops, 1)
+
+    def test_automatic_zoom_stays_blocked_after_manual_zoom(self):
+        self.backend.backend_capabilities = PTZCapabilities(continuous_pan_tilt=True, continuous_zoom=True)
+        self.executor.execute_manual(0, 0, zoom=0.2, frame_age_ms=0, input_age_ms=0)
+        self.assertTrue(self.move_automatic().executed)
+        self.assertEqual(self.backend.moves[-1][2], 0)
+
     def test_manual_high_speed_stops_on_stale_input_and_deadman(self):
         self.move_manual(0.75, -0.75)
         self.assertFalse(self.move_manual(0.75, -0.75, input_age_ms=251.0).executed)

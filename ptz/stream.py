@@ -7,6 +7,7 @@ PTZ.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 import logging
 import os
 import threading
@@ -102,6 +103,7 @@ class RTSPStream:
         self._last_frame_time: float | None = None
         self._frame_id = 0
         self._connected = False
+        self._frame_rate: float = 25.0
 
     @classmethod
     def from_environment(cls, **overrides: object) -> "RTSPStream":
@@ -189,9 +191,15 @@ class RTSPStream:
             return self._frame_id
 
     def is_connected(self) -> bool:
-        """Indica si la captura está abierta y no ha agotado sus reintentos de lectura."""
+        """Indica si la captura está recibiendo cuadros válidos de la cámara."""
         with self._state_lock:
             return self._connected
+
+    @property
+    def frame_rate(self) -> float:
+        """FPS anunciados por la cámara, independientes de la velocidad de YOLO."""
+        with self._state_lock:
+            return self._frame_rate
 
     @property
     def last_frame_age(self) -> float | None:
@@ -237,8 +245,8 @@ class RTSPStream:
                     capture = self._open_capture()
                 except Exception as error:
                     LOGGER.error(
-                        "Error al abrir el stream RTSP: %s; se reintentará",
-                        type(error).__name__,
+                        "Cámara sin señal RTSP (%s); se reintentará en %.1f s",
+                        type(error).__name__, self._reconnect_delay,
                     )
                     capture = None
                 if capture is None:
@@ -259,14 +267,22 @@ class RTSPStream:
                     if ok and frame is not None:
                         failures = 0
                         with self._state_lock:
+                            signal_restored = not self._connected
+                            self._connected = True
                             self._latest_frame = frame
                             self._last_frame_time = monotonic()
                             self._frame_id += 1
+                        if signal_restored:
+                            LOGGER.info("Señal de cámara recibida; video disponible")
                         continue
 
                     failures += 1
                     if failures == 1:
-                        LOGGER.warning("Lectura de frame RTSP fallida; se volverá a intentar")
+                        with self._state_lock:
+                            self._connected = False
+                            self._latest_frame = None
+                            self._last_frame_time = None
+                        LOGGER.warning("Cámara sin señal de video; buscando señal nuevamente")
                     if failures < self._max_read_failures:
                         if self._stop_event.wait(0.05):
                             break
@@ -314,15 +330,17 @@ class RTSPStream:
         if not capture.isOpened():
             capture.release()
             LOGGER.error(
-                "No se pudo abrir el stream RTSP de %s:%d; se reintentará",
+                "Cámara sin señal RTSP en %s:%d; se reintentará en %.1f s",
                 self._camera_ip,
                 self._port,
+                self._reconnect_delay,
             )
             return None
 
         # Algunos backends ignoran esta propiedad; en esos casos se mantiene la
         # estrategia principal de conservar solo el frame compartido más reciente.
         buffer_supported = capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        frame_rate = capture.get(cv2.CAP_PROP_FPS)
         LOGGER.info(
             "RTSP: perfil=%s, transporte=%s, hilos decoder=%d, buffersize soportado=%s",
             "externo" if custom_options else ("baja latencia" if self._low_latency else "estándar"),
@@ -333,7 +351,9 @@ class RTSPStream:
                 capture.release()
                 return None
             self._capture = capture
-            self._connected = True
+            self._connected = False
+            if isinstance(frame_rate, (int, float)) and isfinite(frame_rate) and 0 < frame_rate <= 240:
+                self._frame_rate = float(frame_rate)
         LOGGER.info("Conexión RTSP establecida")
         return capture
 

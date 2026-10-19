@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ptz.operator_control import OperatorControl
 from ptz.ptz_backend import PTZCapabilities
@@ -174,6 +174,19 @@ class OperatorControlTests(unittest.TestCase):
         self.control.step()
         self.assertEqual(self.backend.stops, 1)
 
+    def test_zoom_uses_manual_path_and_emergency_clears_it(self):
+        self.backend.backend_capabilities = PTZCapabilities(continuous_pan_tilt=True, continuous_zoom=True)
+        self.control.set_manual(0, 0, zoom=0.2)
+        self.control.step()
+        self.assertEqual(self.backend.moves[-1], (0, 0, 0.2))
+        self.assertEqual(self.control.status.zoom, 0.2)
+        self.assertTrue(self.control.status.zoom_supported)
+        self.control.request("emergency")
+        self.control.step()
+        self.assertFalse(self.control.status.armed)
+        self.assertEqual(self.control.status.zoom, 0)
+        self.assertEqual(self.backend.stops, 1)
+
     def test_mode_switch_stops_and_requires_rearming(self):
         self.control.set_manual(0.1, 0)
         self.control.step()
@@ -260,6 +273,60 @@ class OperatorControlTests(unittest.TestCase):
         self.assertFalse(control.status.hardware)
         self.assertFalse(control.status.armed)
         control.close()
+
+
+class CameraConnectionTests(unittest.TestCase):
+    def test_offline_camera_retries_and_connects_disarmed(self):
+        clock = Clock()
+        backend = FakeBackend()
+        executor = PTZCommandExecutor(
+            backend, PTZExecutionPolicy(hardware_enabled=True),
+            clock=clock, start_watchdog=False,
+        )
+        factory = Mock(side_effect=[RuntimeError("offline"), RuntimeError("offline"), executor])
+        control = OperatorControl(None, lambda: None, clock=clock, executor_factory=factory)
+        try:
+            self.assertEqual(control.status.state, "CONNECTING")
+            with self.assertLogs("ptz.operator_control", level="INFO") as logs:
+                control.step()
+                self.assertFalse(control.status.hardware)
+                self.assertEqual(control.status.state, "CONNECTING")
+                control.step()
+                factory.assert_called_once()
+                clock.advance(2)
+                control.step()
+                self.assertEqual(factory.call_count, 2)
+                clock.advance(2)
+                control.request("arm", "MOVER")
+                control.set_manual(0.2, 0)
+                control.step()
+            self.assertEqual(factory.call_count, 3)
+            self.assertTrue(control.status.hardware)
+            self.assertFalse(control.status.armed)
+            self.assertEqual(control.status.state, "DISARMED")
+            self.assertEqual(backend.moves, [])
+            self.assertIn("se reintentará en 2.0 s", "\n".join(logs.output))
+            self.assertIn("Control PTZ conectado", "\n".join(logs.output))
+        finally:
+            control.close()
+        self.assertTrue(backend.closed)
+
+    def test_closing_during_connection_closes_new_executor(self):
+        backend = FakeBackend()
+        executor = PTZCommandExecutor(
+            backend, PTZExecutionPolicy(hardware_enabled=True), start_watchdog=False,
+        )
+
+        def connect():
+            control.close()
+            return executor
+
+        control = OperatorControl(None, lambda: None, executor_factory=connect)
+        control.step()
+        self.assertIsNone(control.executor)
+        self.assertTrue(backend.closed)
+        self.assertFalse(executor.armed)
+        self.assertEqual(backend.moves, [])
 
 
 if __name__ == "__main__":

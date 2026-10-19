@@ -26,6 +26,8 @@ class OperatorStatus:
     reason: str = "Listo · selecciona un modo y arma el PTZ"
     pan: float = 0.0
     tilt: float = 0.0
+    zoom: float = 0.0
+    zoom_supported: bool = False
 
 
 class OperatorControl:
@@ -41,8 +43,15 @@ class OperatorControl:
         on_emergency: Callable[[], None] = lambda: None,
         clock: Callable[[], float] = monotonic,
         tracking_options: TrackingOptions | None = None,
+        executor_factory: Callable[[], PTZCommandExecutor] | None = None,
+        reconnect_delay: float = 2.0,
     ) -> None:
+        if reconnect_delay <= 0:
+            raise ValueError("reconnect_delay debe ser positivo")
         self.executor = executor
+        self._executor_factory = executor_factory
+        self._reconnect_delay = reconnect_delay
+        self._next_connection_at = float("-inf")
         self.tracking_options = tracking_options
         self._tracking_revision: int | None = None
         self._video_age = video_age
@@ -52,13 +61,17 @@ class OperatorControl:
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._actions: deque[tuple[str, str]] = deque()
-        self._manual = (0.0, 0.0, float("-inf"))
+        self._manual = (0.0, 0.0, 0.0, float("-inf"))
         self._heartbeat = float("-inf")
         self._preview_at: float | None = None
         self._automatic: tuple[PTZDecision, PTZExecutionContext, float, int | None] | None = None
         self._mode = "manual"
         self._reason = "Listo · selecciona un modo y arma el PTZ"
         self._status = OperatorStatus(hardware=executor is not None)
+        if executor is None and executor_factory is not None:
+            self._status = OperatorStatus(
+                state="CONNECTING", reason="Cámara PTZ sin conexión · reintentando",
+            )
         self._thread: threading.Thread | None = None
 
     @property
@@ -84,13 +97,13 @@ class OperatorControl:
                 return
             if action in {"disarm", "emergency"}:
                 self._actions.clear()
-            self._manual = (0.0, 0.0, float("-inf"))
+            self._manual = (0.0, 0.0, 0.0, float("-inf"))
             self._actions.append((action, value))
         self._wake.set()
 
-    def set_manual(self, pan: float, tilt: float) -> None:
+    def set_manual(self, pan: float, tilt: float, zoom: float = 0.0) -> None:
         with self._lock:
-            self._manual = (pan, tilt, self._clock())
+            self._manual = (pan, tilt, zoom, self._clock())
         self._wake.set()
 
     def submit_automatic(
@@ -115,6 +128,7 @@ class OperatorControl:
 
     def step(self) -> None:
         """Un ciclo determinista, también verificable con un backend falso."""
+        self._connect_executor()
         with self._lock:
             actions = list(self._actions)
             self._actions.clear()
@@ -132,7 +146,7 @@ class OperatorControl:
                 self._reason = "Modo cambiado · PTZ desarmado"
                 with self._lock:
                     self._automatic = None
-                    self._manual = (0.0, 0.0, float("-inf"))
+                    self._manual = (0.0, 0.0, 0.0, float("-inf"))
                 LOGGER.info("Modo %s seleccionado; PTZ desarmado", value)
             elif executor is None:
                 self._reason = "Simulación · hardware PTZ deshabilitado"
@@ -151,7 +165,7 @@ class OperatorControl:
                 self._on_emergency()
 
         with self._lock:
-            pan, tilt, pressed_at = self._manual
+            pan, tilt, zoom, pressed_at = self._manual
             heartbeat = self._heartbeat
             preview_at = self._preview_at
             automatic = self._automatic
@@ -171,7 +185,7 @@ class OperatorControl:
                 age = self._video_age()
                 age = None if age is None or preview_at is None else max(age, now - preview_at)
                 result = executor.execute_manual(
-                    pan, tilt, frame_age_ms=None if age is None else age * 1000.0,
+                    pan, tilt, zoom=zoom, frame_age_ms=None if age is None else age * 1000.0,
                     input_age_ms=max(0.0, (now - pressed_at) * 1000.0),
                 )
                 self._reason = result.reason
@@ -191,15 +205,50 @@ class OperatorControl:
                     0.0, 0.0, frame_age_ms=None, input_age_ms=0.0,
                 ).reason
         if executor is None:
-            status = OperatorStatus(mode=self._mode, reason="Simulación · hardware PTZ deshabilitado")
+            status = OperatorStatus(
+                mode=self._mode,
+                state="CONNECTING" if self._executor_factory is not None else "DISARMED",
+                reason=("Cámara PTZ sin conexión · reintentando" if self._executor_factory is not None
+                        else "Simulación · hardware PTZ deshabilitado"),
+            )
         else:
-            pan, tilt, _ = executor.last_physical_velocity
+            pan, tilt, zoom = executor.last_physical_velocity
             status = OperatorStatus(
                 hardware=True, armed=executor.armed, mode=self._mode,
                 state=executor.state.value, reason=self._reason, pan=pan, tilt=tilt,
+                zoom=zoom, zoom_supported=executor.zoom_supported,
             )
         with self._lock:
             self._status = status
+
+    def _connect_executor(self) -> None:
+        """Reintenta sin bloquear Tk ni conservar órdenes de armado sin conexión."""
+        if (self.executor is not None or self._executor_factory is None
+                or self._closing.is_set() or self._clock() < self._next_connection_at):
+            return
+        LOGGER.info("Intentando conectar el control PTZ de la cámara")
+        try:
+            executor = self._executor_factory()
+        except Exception as error:
+            self._next_connection_at = self._clock() + self._reconnect_delay
+            LOGGER.warning(
+                "Cámara PTZ no disponible (%s); se reintentará en %.1f s",
+                type(error).__name__, self._reconnect_delay,
+            )
+            return
+        with self._lock:
+            closing = self._closing.is_set()
+            if not closing:
+                self.executor = executor
+                self._tracking_revision = None
+                self._actions = deque((action, value) for action, value in self._actions if action != "arm")
+                self._manual = (0.0, 0.0, 0.0, float("-inf"))
+                self._automatic = None
+                self._reason = "PTZ conectado · desarmado"
+        if closing:
+            executor.close()
+        else:
+            LOGGER.info("Control PTZ conectado; listo y desarmado")
 
     def _run(self) -> None:
         failed = False
@@ -222,5 +271,5 @@ class OperatorControl:
                 self._status = replace(
                     self._status, armed=False,
                     state="FAULT" if failed or (self.executor and self.executor.state.value == "FAULT") else "DISARMED",
-                    reason="Control detenido", pan=0.0, tilt=0.0,
+                    reason="Control detenido", pan=0.0, tilt=0.0, zoom=0.0,
                 )

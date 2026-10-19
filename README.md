@@ -6,7 +6,7 @@ Hikvision mediante ISAPI con ONVIF como alternativa de conexión.
 
 El arranque predeterminado es de **simulación: no conecta el backend PTZ ni
 habilita movimiento físico**. Habilitar hardware tampoco arma el ejecutor; el
-armado requiere una acción y confirmación manual independientes.
+armado requiere pulsar **Armar PTZ**, sin un diálogo de confirmación adicional.
 
 ## Funcionalidad presente en el código
 
@@ -264,10 +264,10 @@ solo después de habilitar explícitamente el hardware; el arranque no lo automa
    `DETECTCAM_ONVIF_PORT` y `DETECTCAM_PTZ_CHANNEL` si difieren de la plantilla.
    ONVIF puede requerir un usuario creado específicamente en la cámara.
 4. Empiece con `DETECTCAM_PTZ_HARDWARE_ENABLED=false` y compruebe video,
-   detecciones y clases. Este modo simula el control PTZ, pero requiere una
-   cámara RTSP real y pesos del modelo.
+   detecciones y clases. Este modo simula el control PTZ y requiere pesos del
+   modelo. La interfaz puede abrirse aunque la cámara esté apagada o sin señal.
 5. Para probar movimiento físico, cambie el valor a `true`, reinicie el programa,
-   elija el modo y use **Armar PTZ** con su confirmación manual.
+   elija el modo y pulse **Armar PTZ**.
 
 `DETECTCAM_PTZ_BACKEND=auto` intenta ISAPI y usa ONVIF si falla la conexión
 inicial. También puede seleccionar `isapi` u `onvif` explícitamente.
@@ -297,18 +297,41 @@ El mismo comando `python main.py` abre el centro de control:
 
 - **Video**: conserva cajas de detección, objetivo y zona central; los datos ya
   no cubren la imagen. Se ajusta al tamaño de la ventana sin deformarse.
+- **Mostrar zona central**: la casilla debajo del video permite ocultar o mostrar
+  al instante el rectángulo azul de centrado. El ajuste es visual y dura esta
+  sesión; al iniciar, la guía vuelve a estar visible.
 - **Registro ▾ / ▸**: muestra u oculta el panel inferior. La pestaña **Estado
   actual** muestra telemetría de video y PTZ; **Eventos** conserva hasta 2 000
   líneas, con opciones para pausar y limpiar. Al pausar, el búfer también está
   limitado a las 2 000 entradas más recientes.
-- **Armar PTZ**: abre un popup «¿Seguro que quieres armar el PTZ?». Confirma
-  con **Sí**; **No** cancela. **Desarmar**
+- **Armar PTZ**: arma directamente con un clic, sin popup. **Desarmar**
   detiene y bloquea el movimiento. En simulación, estos botones están
   deshabilitados; para usar hardware debe habilitarse previamente
   `DETECTCAM_PTZ_HARDWARE_ENABLED=true` en `.env`.
 - **Manual** (modo inicial): la cruceta mueve pan/tilt mientras se mantiene
   pulsado. Al soltar, salir del botón, perder foco o minimizar, se detiene.
+  Las **flechas** y **WASD** hacen lo mismo y permiten combinar direcciones.
   El deslizador permite entre 5 % y 75 % de velocidad manual de pan/tilt.
+- **Zoom manual**: usa la barra visible sobre la parada de emergencia, los
+  botones **− Alejar / + Acercar** o las teclas **+ / − del teclado numérico**.
+  También funcionan los signos + y − del teclado principal. La barra indica
+  dirección y velocidad, vuelve al centro al soltar y no representa un factor
+  óptico medido. Requiere modo manual, PTZ armado, video reciente y soporte de
+  zoom del backend. El límite manual es 30 %; el zoom automático sigue en cero.
+- **Captura [C]**: guarda un JPG del cuadro completo recibido, con fecha y hora
+  y sin reducirlo al tamaño de la ventana. La pestaña **Archivos** permite incluir
+  las detecciones y la zona central visible en la captura. Requiere señal reciente.
+- **Grabar [V]**: inicia una grabación MP4 del video limpio, sin marcas ni audio;
+  pulsar **V** otra vez o **Detener** finaliza el archivo. El indicador REC muestra
+  la duración. Mantener la tecla pulsada no alterna repetidamente la grabación.
+  El grabador lee RTSP en su propio hilo, usa los FPS de cámara (25 de respaldo)
+  y conserva la duración real aunque YOLO sea más lento. Si cambia la resolución
+  o se pierde señal, finaliza el archivo y registra el motivo en **Eventos**.
+- **Carpeta…**: elige dónde guardar. Por defecto se usa `~/Videos/Detectcam`,
+  con subcarpetas `capturas/` y `grabaciones/`; se crean al guardar el primer
+  archivo. También puede configurarse `DETECTCAM_MEDIA_DIR` en `.env`.
+  Cada archivo tiene fecha, hora y un identificador para evitar sobrescrituras.
+  El cambio desde la ventana dura esta sesión y requiere detener la grabación.
 - **Seguimiento automático**: aplica las decisiones del tracker. Cambiar entre
   modos detiene y desarma; hay que volver a armar en el modo elegido.
 - **Pestaña Seguimiento**: ajusta la confianza mínima de movimiento y selecciona
@@ -319,7 +342,18 @@ El mismo comando `python main.py` abre el centro de control:
   esta sesión; al reiniciar se recupera la configuración inicial.
 - **Parada de emergencia** o **Espacio**: detiene y desarma. El botón permanece
   visible aunque la ventana sea pequeña; el resto de controles tiene scroll.
-- Atajos: `a` abre el armado, `d` desarma y `q` cierra.
+- Atajos: **F2** arma, **F3** desarma, **Espacio / Escape** paran y desarman,
+  **Q** cierra. **A/D** quedan reservadas al movimiento manual. Los atajos de
+  movimiento y archivos no se activan al escribir en un campo editable ni con
+  Ctrl/Alt. Al perder foco se borran las teclas mantenidas y se detienen los ejes.
+
+La ventana abre sin esperar conexión con la cámara. Mientras no haya video,
+muestra **Sin señal · reconectando** y reintenta RTSP en segundo plano sin límite
+de intentos, con una pausa de 2 segundos entre conexiones fallidas. Si el hardware
+PTZ está habilitado, también reintenta su conexión en segundo plano y habilita
+el armado cuando conecta, siempre desarmado. **Eventos** registra los intentos,
+la pérdida de señal y la llegada de video; la imagen aparece automáticamente al
+recuperarse la señal.
 
 La interfaz, la visión y el envío de órdenes se ejecutan por separado. La
 cruceta necesita un cuadro mostrado reciente y pulsaciones renovadas; no

@@ -10,6 +10,7 @@ import numpy as np
 from ptz.main import main, run_detection_loop
 from ptz.operator_control import OperatorControl
 from ptz.ptz_decision import PTZDecisionEngine
+from ptz.ptz_execution_policy import PTZExecutionPolicy
 from ptz.ptz_metrics import PTZMetrics
 from ptz.stream import ReceivedFrame, RTSPStream
 from ptz.target_selector import TargetSelector
@@ -119,11 +120,52 @@ class PipelineTests(unittest.TestCase):
         with patch("ptz.main.RTSPStream.from_environment", return_value=stream), \
              patch("ptz.main.YOLODetector.from_environment", return_value=detector), \
              patch("ptz.main.PTZMetrics.from_environment", return_value=metrics), \
-             patch("ptz.main.prepare_hardware_executor", return_value=None), \
+             patch("ptz.main.create_hardware_executor") as factory, \
              patch("ptz.ui.DetectcamDashboard", side_effect=tk.TclError("no display")):
             self.assertEqual(main(), 1)
+            factory.assert_not_called()
         stream.stop.assert_called_once()
         metrics.close.assert_called_once()
+
+    def test_dashboard_runs_while_camera_hardware_connection_is_blocked(self):
+        entered, release = threading.Event(), threading.Event()
+        stream = Mock()
+        stream.is_connected.return_value = False
+        stream.read_packet.return_value = None
+        stream.last_frame_age = None
+        detector = Mock()
+        detector.class_names = {0: "drone"}
+        detector.confidence = 0.25
+        metrics = PTZMetrics(enabled=False)
+        dashboard = Mock(closed=False)
+
+        def connect(*_args):
+            entered.set()
+            release.wait(2)
+            raise RuntimeError("camera offline")
+
+        def run_dashboard():
+            try:
+                self.assertTrue(entered.wait(2))
+                stream.start.assert_called_once()
+                control = dashboard_factory.call_args.args[0]
+                self.assertEqual(control.status.state, "CONNECTING")
+                self.assertFalse(control.status.hardware)
+                self.assertIsNone(control.executor)
+            finally:
+                release.set()
+
+        dashboard.run.side_effect = run_dashboard
+        with patch("ptz.main.RTSPStream.from_environment", return_value=stream), \
+             patch("ptz.main.YOLODetector.from_environment", return_value=detector), \
+             patch("ptz.main.PTZMetrics.from_environment", return_value=metrics), \
+             patch("ptz.main.PTZExecutionPolicy.from_environment", return_value=PTZExecutionPolicy(hardware_enabled=True)), \
+             patch("ptz.main.create_hardware_executor", side_effect=connect) as hardware_factory, \
+             patch("ptz.ui.DetectcamDashboard", return_value=dashboard) as dashboard_factory:
+            self.assertEqual(main(), 0)
+            hardware_factory.assert_called_once()
+        stream.stop.assert_called_once()
+        dashboard.close.assert_called_once()
 
 
 if __name__ == "__main__":

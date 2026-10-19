@@ -4,6 +4,7 @@ import logging
 import os
 import tkinter as tk
 import unittest
+from time import monotonic
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -74,12 +75,23 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(self.app.log_panel.winfo_ismapped())
         self.assertEqual(self.app.arm_button["state"], "disabled")
 
-    def test_arm_dialog_submits_confirmation_and_can_cancel(self):
+    def test_arm_submits_directly_without_confirmation_dialog(self):
         self.control._status = OperatorStatus(hardware=True)
-        with patch("ptz.ui.messagebox.askyesno", return_value=True), patch.object(self.control, "request") as request:
+        with patch("tkinter.messagebox.askyesno") as dialog, patch.object(self.control, "request") as request:
             self.app.arm()
             request.assert_called_once_with("arm", "MOVER")
-        with patch("ptz.ui.messagebox.askyesno", return_value=False), patch.object(self.control, "request") as request:
+            dialog.assert_not_called()
+
+    def test_camera_missing_keeps_dashboard_open_and_arm_disabled(self):
+        self.control._status = OperatorStatus(
+            state="CONNECTING", reason="Cámara PTZ sin conexión · reintentando",
+        )
+        self.app._tick()
+        self.assertFalse(self.app.closed)
+        self.assertIn("Sin señal", self.app.connection["text"])
+        self.assertIn("reintentando", self.app.hardware_label["text"])
+        self.assertEqual(self.app.arm_button["state"], "disabled")
+        with patch.object(self.control, "request") as request:
             self.app.arm()
             request.assert_not_called()
 
@@ -105,9 +117,69 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(button.winfo_ismapped())
         bottom = button.winfo_rooty() + button.winfo_height()
         self.assertLessEqual(bottom, self.app.root.winfo_rooty() + self.app.root.winfo_height())
+        self.assertTrue(self.app.zoom_scale.winfo_ismapped())
+        self.assertLess(self.app.zoom_scale.winfo_rooty(), button.winfo_rooty())
         self.app.controls_canvas.yview_moveto(1)
         self.app.root.update()
         self.assertTrue(self.app.speed_scale.winfo_ismapped())
+
+    def test_actual_keyboard_bindings_move_and_release_with_numpad_zoom(self):
+        self.control._status = OperatorStatus(hardware=True, armed=True, zoom_supported=True)
+        self.app._tick()
+        self.app.root.focus_force()
+        self.app.root.update()
+        with patch.object(self.control, "set_manual") as move, patch.object(self.control, "request") as request:
+            self.app.root.event_generate("<KeyPress-w>")
+            self.app.root.event_generate("<KeyPress-Right>")
+            self.app.root.update()
+            move.assert_called_with(0.15, -0.15)
+            request.assert_not_called()
+            self.app.root.event_generate("<KeyPress>", keysym="KP_Add")
+            self.app.root.update()
+            self.assertEqual(self.app.zoom.get(), 0.3)
+            move.assert_called_with(0.15, -0.15, zoom=0.3)
+            for key in ("w", "Right", "KP_Add"):
+                self.app.root.event_generate("<KeyRelease>", keysym=key)
+            self.app.root.after(50, self.app.root.quit)
+            self.app.run()
+            self.assertEqual(self.app.zoom.get(), 0)
+            move.assert_called_with(0.0, 0.0)
+
+    def test_capture_and_video_shortcuts_do_not_repeat_when_held(self):
+        self.app.root.focus_force()
+        self.app.root.update()
+        with patch.object(self.app, "capture_image") as capture, \
+             patch.object(self.app, "toggle_recording") as record:
+            for key in ("c", "v"):
+                self.app.root.event_generate(f"<KeyPress-{key}>")
+                self.app.root.event_generate(f"<KeyPress-{key}>")
+                self.app.root.event_generate(f"<KeyRelease-{key}>")
+            self.app.root.update()
+            capture.assert_called_once()
+            record.assert_called_once()
+
+    def test_capture_uses_full_camera_frame_and_rejects_stale_images(self):
+        frame = np.full((480, 640, 3), 80, dtype=np.uint8)
+        self.app._preview_frame = frame
+        self.app._preview_received_at = monotonic()
+        with patch.object(self.app.media, "capture") as capture:
+            self.app.capture_image()
+            self.assertIs(capture.call_args.args[0], frame)
+            self.app._preview_received_at -= 2
+            self.app.capture_image()
+            capture.assert_called_once()
+
+    def test_zoom_slider_returns_to_zero_on_mouse_release(self):
+        self.control._status = OperatorStatus(hardware=True, armed=True, zoom_supported=True)
+        self.app._tick()
+        with patch.object(self.control, "set_manual") as move:
+            self.app.zoom_scale.set(-0.22)
+            self.app.root.update()
+            move.assert_called_with(0.0, 0.0, zoom=-0.22)
+            self.app.root.event_generate("<ButtonRelease-1>")
+            self.app.root.update()
+            self.assertEqual(self.app.zoom.get(), 0)
+            move.assert_called_with(0.0, 0.0)
 
     def test_manual_speed_reaches_75_percent(self):
         self.control._status = OperatorStatus(hardware=True, armed=True)
@@ -196,7 +268,7 @@ class DashboardTests(unittest.TestCase):
         self.app.arm_button.configure(state="normal")
         self.app.arm_button.focus_force()
         self.app.root.update()
-        with patch.object(self.control, "request") as request, patch("ptz.ui.messagebox.askyesno") as dialog:
+        with patch.object(self.control, "request") as request, patch("tkinter.messagebox.askyesno") as dialog:
             self.app.arm_button.event_generate("<KeyPress-space>")
             self.app.arm_button.event_generate("<KeyRelease-space>")
             self.app.root.update()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -29,6 +30,7 @@ class StreamLatencyTests(unittest.TestCase):
             options = dict(zip(params[::2], params[1::2]))
             self.assertEqual(options[cv2.CAP_PROP_N_THREADS], 1)
             self.assertGreater(options[cv2.CAP_PROP_READ_TIMEOUT_MSEC], 0)
+            self.assertFalse(stream.is_connected())
         cap.release()
 
     def test_explicit_external_ffmpeg_options_are_preserved(self):
@@ -66,6 +68,66 @@ class StreamLatencyTests(unittest.TestCase):
                        {"decoder_threads": 1.5}, {"low_latency": "yes"}):
             with self.subTest(kwargs=kwargs), self.assertRaises(StreamConfigurationError):
                 self.stream(**kwargs)
+
+    def test_offline_camera_and_lost_signal_reconnect_until_frames_arrive(self):
+        stream = self.stream(max_read_failures=1, reconnect_delay=0.001)
+        offline, interrupted, restored = Mock(), Mock(), Mock()
+        offline.isOpened.return_value = False
+        for capture in (interrupted, restored):
+            capture.isOpened.return_value = True
+            capture.set.return_value = False
+        image = np.full((4, 6, 3), 7, dtype=np.uint8)
+        interrupted.read.side_effect = [(True, image), (False, None)]
+        reconnecting, allow_connect = threading.Event(), threading.Event()
+        received, allow_read = threading.Event(), threading.Event()
+        attempts = iter([offline, RuntimeError("offline"), interrupted, restored])
+
+        def open_capture(*_args):
+            result = next(attempts)
+            if isinstance(result, Exception):
+                raise result
+            if result is restored:
+                reconnecting.set()
+                allow_connect.wait(2)
+            return result
+
+        def read_after_frame():
+            received.set()
+            allow_read.wait(2)
+            return False, None
+
+        def read_frame():
+            if restored.read.call_count == 1:
+                return True, image
+            return read_after_frame()
+
+        restored.read.side_effect = read_frame
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("ptz.stream.cv2.VideoCapture", side_effect=open_capture) as factory, \
+             self.assertLogs("ptz.stream", level="INFO") as logs:
+            try:
+                stream.start()
+                self.assertTrue(reconnecting.wait(2))
+                self.assertFalse(stream.is_connected())
+                self.assertIsNone(stream.read_packet())
+                self.assertIsNone(stream.last_frame_age)
+                allow_connect.set()
+                self.assertTrue(received.wait(2))
+                self.assertTrue(stream.is_connected())
+                self.assertEqual(stream.read_packet().frame_id, 2)
+                self.assertEqual(factory.call_count, 4)
+            finally:
+                stream._stop_event.set()
+                allow_connect.set()
+                allow_read.set()
+                stream.stop()
+        text = "\n".join(logs.output)
+        self.assertIn("Cámara sin señal RTSP", text)
+        self.assertIn("Cámara sin señal de video", text)
+        self.assertEqual(text.count("Señal de cámara recibida"), 2)
+        self.assertNotIn("test-password", text)
+        for capture in (offline, interrupted, restored):
+            capture.release.assert_called_once()
 
 
 class PreviewAnnotationTests(unittest.TestCase):

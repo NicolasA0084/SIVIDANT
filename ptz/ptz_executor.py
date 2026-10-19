@@ -26,6 +26,7 @@ DEFAULT_PHYSICAL_MAX_TILT = 0.30
 DEFAULT_PHYSICAL_MAX_ZOOM = 0.00
 MAX_ALLOWED_PHYSICAL_PAN_TILT = 0.30
 MAX_ALLOWED_MANUAL_PAN_TILT = 0.75
+MAX_ALLOWED_MANUAL_ZOOM = 0.30
 ARM_CONFIRMATION = "MOVER"
 LOGGER = logging.getLogger(__name__)
 
@@ -169,6 +170,13 @@ class PTZCommandExecutor:
     @property
     def hardware_enabled(self) -> bool:
         return self._policy.hardware_enabled
+
+    @property
+    def zoom_supported(self) -> bool:
+        try:
+            return self._backend.backend_capabilities.continuous_zoom
+        except Exception:
+            return False
 
     @property
     def fault_reason(self) -> str | None:
@@ -324,7 +332,7 @@ class PTZCommandExecutor:
 
 
     def execute_manual(
-        self, pan: float, tilt: float, *, frame_age_ms: float | None,
+        self, pan: float, tilt: float, *, zoom: float = 0.0, frame_age_ms: float | None,
         input_age_ms: float | None,
     ) -> PTZExecutionResult:
         """Movimiento manual hasta 75 %, con interlocks y watchdog vigentes."""
@@ -346,16 +354,16 @@ class PTZCommandExecutor:
                     self._enter_fault_locked("backend disconnected")
                     return PTZExecutionResult(False, self._state, "backend disconnected")
             result = self._policy.evaluate_manual(
-                pan, tilt, armed=self._armed,
+                pan, tilt, zoom=zoom, armed=self._armed,
                 faulted=self._state == PTZExecutorState.FAULT,
                 backend_connected=connected, capabilities=capabilities,
                 frame_age_ms=frame_age_ms, input_age_ms=input_age_ms,
                 now=now, last_command_at=self._last_command_at,
             )
-            self._last_requested_velocity = (pan, tilt, 0.0)
+            self._last_requested_velocity = (pan, tilt, zoom)
             if result.allowed:
                 decision = PTZDecision(
-                    action=DecisionAction.MOVE, pan=pan, tilt=tilt, zoom=0.0,
+                    action=DecisionAction.MOVE, pan=pan, tilt=tilt, zoom=zoom,
                     target_error_x=0.0, target_error_y=0.0,
                     inside_dead_zone=False, safe_to_move=True, reason="manual control",
                 )
@@ -496,7 +504,7 @@ class PTZCommandExecutor:
         tilt_limit = MAX_ALLOWED_MANUAL_PAN_TILT if manual else self._physical_max_tilt
         physical_pan = self._clamp(decision.pan, pan_limit)
         physical_tilt = self._clamp(decision.tilt, tilt_limit)
-        physical_zoom = 0.0
+        physical_zoom = self._clamp(decision.zoom, MAX_ALLOWED_MANUAL_ZOOM) if manual else 0.0
         LOGGER.debug(
             "PTZ solicitado pan=%.3f tilt=%.3f; físico pan=%.3f tilt=%.3f",
             decision.pan, decision.tilt, physical_pan, physical_tilt,
@@ -527,8 +535,8 @@ class PTZCommandExecutor:
         self._last_valid_update_at = now
         self._state = PTZExecutorState.MOVING_CONTINUOUS
         LOGGER.info(
-            "ContinuousMove PTZ enviado: pan=%.3f tilt=%.3f zoom=0.000",
-            physical_pan, physical_tilt,
+            "ContinuousMove PTZ enviado: pan=%.3f tilt=%.3f zoom=%.3f",
+            physical_pan, physical_tilt, physical_zoom,
         )
         LOGGER.debug("Latencia de request PTZ: %.1f ms", self._last_backend_latency_ms)
         return PTZExecutionResult(True, self._state, "continuous movement executed")

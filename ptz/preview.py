@@ -51,7 +51,7 @@ def draw_dead_zone(frame: NDArray[np.uint8], dead_zone: tuple[float, float]) -> 
 
 def render_preview(
     frame: NDArray[np.uint8], annotations: PreviewAnnotations | None,
-    *, timestamp: float,
+    *, timestamp: float, show_dead_zone: bool = True,
 ) -> NDArray[np.uint8]:
     """Nunca reutiliza cajas caducadas ni de otra resolución."""
     if annotations is None:
@@ -63,5 +63,6 @@ def render_preview(
     display = draw_detections(frame, annotations.detections) if fresh else frame.copy()
     if fresh:
         draw_target(display, annotations.target, annotations.state)
-    draw_dead_zone(display, annotations.dead_zone)
+    if show_dead_zone:
+        draw_dead_zone(display, annotations.dead_zone)
     return display

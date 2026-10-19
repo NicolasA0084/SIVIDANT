@@ -77,7 +77,7 @@ class PTZRuntime(Protocol):
     def watchdog_activations(self) -> int: ...
     @property
     def stop_commands(self) -> int: ...
-    def execute_manual(self, pan: float, tilt: float, *, frame_age_ms: float | None,
+    def execute_manual(self, pan: float, tilt: float, *, zoom: float = 0.0, frame_age_ms: float | None,
                        input_age_ms: float | None) -> object: ...
     def arm(self, confirmation: str) -> object: ...
     def disarm(self) -> object: ...
@@ -575,26 +575,19 @@ def main() -> int:
         LOGGER.error("Configuración inicial inválida: %s", error)
         return 1
 
-    try:
-        executor = prepare_hardware_executor(
-            execution_policy,
-            factory=lambda policy: create_hardware_executor(policy, tuning),
-        )
-    except Exception as error:
-        LOGGER.error("No se pudo preparar el backend PTZ: %s", error)
-        metrics.close()
-        return 1
-
-
     from ptz.operator_control import OperatorControl
 
     def video_age() -> float | None:
         return stream.last_frame_age if stream.is_connected() else None
 
     control = OperatorControl(
-        executor, video_age, on_emergency=metrics.note_emergency_stop,
+        None, video_age, on_emergency=metrics.note_emergency_stop,
         tracking_options=tracking_options,
+        executor_factory=(lambda: create_hardware_executor(execution_policy, tuning))
+        if execution_policy.hardware_enabled else None,
     )
+    if not execution_policy.hardware_enabled:
+        LOGGER.info("PTZ hardware deshabilitado; main permanece en simulación")
     mailbox = FrameMailbox()
     stop_event = threading.Event()
     pipeline_failed = threading.Event()
@@ -645,6 +638,7 @@ def main() -> int:
             worker.join()
         if dashboard is not None and not dashboard.closed:
             dashboard.close()
+        executor = control.executor
         if executor is not None:
             metrics.sync_executor_counters(
                 stop_commands=executor.stop_commands,
