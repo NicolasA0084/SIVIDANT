@@ -1,0 +1,13 @@
+{
+  "min_confidence": 0.5,
+  "allowed_classes": ["drone"],
+  "frames": [
+    {"frame_id": 1, "time_s": 10.00, "detections": [{"class_id": 0, "class_name": "drone", "confidence": 0.9, "x1": 1460, "y1": 490, "x2": 1500, "y2": 530}]},
+    {"frame_id": 2, "time_s": 10.10, "camera_delta": [-50, 0], "detections": [{"class_id": 0, "class_name": "drone", "confidence": 0.9, "x1": 1410, "y1": 490, "x2": 1450, "y2": 530}]},
+    {"frame_id": 3, "time_s": 10.20, "camera_delta": [-50, 0], "detections": []},
+    {"frame_id": 4, "time_s": 10.30, "camera_delta": [-50, 0], "detections": []},
+    {"frame_id": 5, "time_s": 10.40, "detections": [{"class_id": 0, "class_name": "drone", "confidence": 0.92, "x1": 570, "y1": 490, "x2": 610, "y2": 530}]},
+    {"frame_id": 6, "time_s": 10.50, "detections": []},
+    {"frame_id": 7, "time_s": 11.40, "detections": []}
+  ]
+}

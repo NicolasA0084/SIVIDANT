@@ -1,0 +1,48 @@
+# Ajustes nuevos: no se heredan ganancias ni restricciones del perfil SAFE.
+# Las velocidades son unidades normalizadas del protocolo, no grados/segundo.
+
+[application]
+warmup = true
+metrics_enabled = false
+initial_classes = ["drone"]     # otras clases siguen disponibles en la interfaz
+
+[tracking]
+acquisition_mode = "fast"       # primera detección válida; "confirm" exige hits
+confirmation_hits = 2
+association_distance = 0.18     # fracción de la diagonal de la imagen
+min_iou = 0.03
+prediction_horizon_s = 0.18
+velocity_tau_s = 0.12
+max_velocity_diagonals_s = 2.0
+recovery_s = 0.85               # no se renueva con cuadros vacíos
+forget_s = 1.20
+
+[control]
+max_pan = 0.65
+max_tilt = 0.65
+kp_acquire = 1.8
+kp_track = 1.2
+far_error = 0.25
+dead_zone = 0.025
+dead_zone_hysteresis = 0.015
+min_command = 0.07
+prediction_s = 0.06             # sólo con movimiento de fondo fiable
+max_prediction = 0.08
+max_frame_age_s = 0.50
+target_fresh_s = 0.30
+recovery_s = 0.85
+recovery_max_command = 0.35
+recovery_budget = 0.09          # integral |orden|·s por eje sin odometría fiable
+intent_ttl_s = 0.12
+
+[runtime]
+command_interval_s = 0.08       # máximo teórico 12.5 envíos/s; depende de red
+heartbeat_timeout_s = 0.40
+max_command_ttl_s = 0.35
+reconnect_delay_s = 2.0
+connect_timeout_s = 0.35
+read_timeout_s = 0.40
+server_motion_timeout_s = 0.35 # ONVIF sujeto al mínimo anunciado; STOP local vigila TTL
+manual_max_pan = 0.75
+manual_max_tilt = 0.75
+manual_max_zoom = 0.30

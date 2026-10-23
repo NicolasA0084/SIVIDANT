@@ -1,0 +1,18 @@
+{
+  "python": "3.12.3",
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "shared_environment": "../ptz_test/.venv",
+  "shared_model": "../ptz_test/model/best.pt",
+  "model_bytes": 44014809,
+  "model_sha256": "d81ad904e579a4262400c7383e709a8b4f8754e51e9e2fdd37661de84ac11edd",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "opencv-python": "5.0.0.93",
+    "requests": "2.34.2",
+    "ultralytics": "8.4.138",
+    "Pillow": "12.3.0",
+    "onvif-zeep": "0.2.12",
+    "torch": "2.14.0",
+    "torchvision": "0.29.0"
+  }
+}

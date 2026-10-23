@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "detectcam-propuesta"
+version = "2.0.0"
+description = "Seguimiento PTZ predictivo de drones con interfaz local y recuperación temporal"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+  "numpy==2.5.2", "opencv-python==5.0.0.93", "requests==2.34.2",
+  "ultralytics==8.4.138", "Pillow==12.3.0", "onvif-zeep==0.2.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

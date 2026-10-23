@@ -1,188 +1,103 @@
-# Arquitectura de Detectcam
+# Arquitectura de Detectcam 2
 
-## Estado actual
+La propuesta mantiene una aplicación local y un proceso, con componentes
+inyectados y mensajes inmutables. La interfaz se conserva como adaptador; el
+núcleo nuevo no importa Tk, OpenCV, PyTorch, HTTP ni el proyecto anterior.
 
-Detectcam implementa adquisición RTSP, inferencia YOLO, selección de objetivo,
-tracking temporal y seguimiento PTZ automático mediante movimiento continuo. El
-código contiene adaptadores orientados a cámaras Hikvision. Esta revisión fue
-estática y offline: no valida una cámara ni el movimiento físico.
+## Flujo y propiedad del estado
 
-La versión pública conserva un único ajuste: **SAFE**. No implementa todavía
-búsqueda automática, PID con término integral, Smart Tracking, zoom automático
-ni control automático mediante Position3D.
+```mermaid
+flowchart TD
+    Camera[Cámara] -->|RTSP| Receiver[RTSPStream: último cuadro]
+    Receiver --> Dashboard[Tk: vista directa]
+    Receiver --> Media[Captura JPG / MP4]
+    Receiver --> Vision[YOLO + flujo de fondo]
+    Vision --> Tracker[Tracker: identidad y última posición]
+    Tracker -->|TrackSnapshot inmutable| Operator[Operador + Controller: 50 Hz]
+    Dashboard -->|entradas y heartbeat| Operator
+    Operator -->|intención con expiración| Runtime[MotionRuntime: último comando]
+    Runtime --> Move[Worker MOVE / conexión]
+    Runtime --> Stop[Worker STOP independiente]
+    Runtime --> Watchdog[Watchdog local]
+    Move -->|ISAPI / ONVIF| Camera
+    Stop -->|STOP / sesión separada| Camera
+    Vision --> Metrics[Cola de telemetría]
+    Runtime --> Metrics
+```
 
-## Flujo de datos
+- Captura es el único escritor del último cuadro. Los consumidores tratan el
+  ndarray como sólo lectura; la vista anota una copia.
+- Visión es el único propietario de `Tracker`. Cada adquisición se procesa una
+  sola vez. Inferencia lenta consume la imagen más reciente al siguiente ciclo.
+- El operador es el único propietario de `Controller`. Recibe snapshots y evalúa
+  sus edades incluso cuando YOLO no publica nuevos resultados.
+- El runtime publica `MotionSnapshot` congelados. Leerlos nunca espera una
+  operación de red. Los bloqueos internos abarcan sólo transiciones locales.
+- MOVE y STOP tienen trabajadores y conexiones separados. Ningún callback de Tk
+  hace red. El watchdog solicita STOP sin tomar un bloqueo de transporte.
+- La telemetría tiene colas y consumidores propios; un disco lento o callback
+  bloqueado no retiene la parada. Sus muestras pueden descartarse.
 
-~~~text
-Cámara RTSP
-    |
-    v
-RTSPStream -> YOLODetector -> TargetSelector -> TargetTracker
-                                                   |
-                                                   v
-                                         PTZDecisionEngine
-                                                   |
-                                                   v
-                                         PTZExecutionPolicy
-                                                   |
-                                                   v
-                                         PTZCommandExecutor
-                                                   |
-                                                   v
-                                  ISAPI PTZ -> ONVIF fallback
-~~~
+## Contratos
 
-La información visual avanza de izquierda a derecha. El movimiento físico sólo
-puede salir del PTZCommandExecutor; ninguna capa de detección o tracking conoce
-las credenciales ni llama directamente a la cámara.
+`Detection` contiene caja, clase y confianza. `TrackSnapshot` añade identidad,
+centro transportado por fondo, velocidades, fase y timestamps de evidencia.
+`MotionIntent` contiene velocidad normalizada, cuadro origen y plazo fijo.
+`MotionCommand` añade ID único, epoch de cancelación y revisión de ajustes.
+`MotionSnapshot` distingue intención, petición en vuelo y confirmación de STOP.
 
-## Componentes
+Los eventos permiten seguir `frame_id -> command_id -> dispatched -> completed`.
+La aceptación no se cuenta como envío y un ACK no es posición mecánica medida.
 
-| Módulo | Responsabilidad |
-| --- | --- |
-| ptz/stream.py | Mantiene en un hilo el frame RTSP más reciente y reconecta ante fallos. |
-| ptz/media.py | Guarda JPG en segundo plano y graba MP4 desde RTSP a los FPS de cámara, independientemente de Tk y YOLO. |
-| ptz/detector.py | Carga best.pt una vez y convierte la salida de Ultralytics en detecciones internas. |
-| ptz/target_selector.py | Filtra clases y confianza, y escoge un candidato cuando no existe un track vigente. |
-| ptz/target_tracker.py | Conserva la identidad local mediante IoU, distancia y confianza; tolera pérdidas breves. |
-| ptz/ptz_decision.py | Calcula error respecto al centro, filtra y genera HOLD, MOVE o candidato Position3D. |
-| ptz/ptz_execution_policy.py | Evalúa antigüedad, confianza, frames visibles y funciones permitidas. |
-| ptz/ptz_executor.py | Aplica armado, límites físicos, rate limit, dead-man, watchdog y parada. |
-| ptz/ptz_backend.py | Define el contrato común y selecciona ISAPI u ONVIF. |
-| ptz/isapi_ptz.py | Traduce velocidades normalizadas a ISAPI con HTTP Digest. |
-| ptz/ptz_controller.py | Implementa movimiento continuo ONVIF como fallback. |
-| ptz/ptz_tuning.py | Centraliza las constantes del perfil SAFE. |
-| ptz/ptz_metrics.py | Registra telemetría opcional sin modificar decisiones ni comandos. |
-| ptz/config.py | Carga `.env`, conserva la prioridad del entorno, valida y resuelve rutas. |
-| main.py | Ejecuta el preflight y delega el pipeline a `ptz/main.py`. |
-| ptz/main.py | Construye componentes y procesa visión en un hilo independiente. |
-| ptz/ui.py | Interfaz Tkinter, video directo de RTSP, registro plegable y botones del operador. |
-| ptz/preview.py | Anotaciones sobre el video; descarta cajas antiguas o de otra resolución. |
-| ptz/operator_control.py | Reintenta la conexión inicial PTZ, serializa órdenes y arbitra modos manual/automático fuera del hilo gráfico. |
-| ptz/tracking_settings.py | Comparte confianza y clases seleccionadas mediante instantáneas inmutables con revisión. |
+## Pérdida breve y recuperación
 
-## Convención de coordenadas
+El destino es el último punto observado, transportado por movimiento de fondo
+fiable. No se repite indefinidamente el último vector de velocidad del dron.
+Sin estimación fiable, el controlador limita la integral de orden por eje y el
+tiempo desde la última detección. Una detección válida nueva cancela esa búsqueda.
+Al cambiar confianza/clases se invalida la revisión anterior y se reinicia el
+tracker; una inferencia que termine tarde no puede reactivar el filtro viejo.
 
-Entre las capas internas se usan coordenadas de pantalla normalizadas:
+`captured_at` se conserva desde la adquisición local. `predict(now)` no lo
+actualiza. La intención vence por el mínimo entre TTL, antigüedad de cuadro y
+plazo de recuperación. El heartbeat mantiene presencia, sin prolongar evidencia.
 
-- pan negativo: izquierda;
-- pan positivo: derecha;
-- tilt negativo: arriba;
-- tilt positivo: abajo.
+## Orden de parada y fallos
 
-Cada adaptador traduce esta convención al signo requerido por su protocolo. Esto
-evita que la lógica de tracking dependa de ISAPI u ONVIF.
+Una parada incrementa un epoch, elimina movimiento pendiente y despierta STOP.
+Un MOVE que ya está cruzando la red puede llegar después del primer STOP; al
+volver su petición se solicita otro STOP. Los plazos de socket no son un límite
+absoluto del firmware y no pueden garantizar detención durante una caída de red.
 
-## Perfil SAFE
+Un error de transporte deja el sistema desarmado. Reconectar es una acción
+explícita que reinicia transporte y exige respuesta de STOP antes de habilitar
+armado; nunca repite un movimiento fallido ni cambia de protocolo para repetirlo.
+ISAPI -> ONVIF sólo se intenta durante la conexión inicial.
 
-El perfil limita la respuesta antes de enviarla al backend:
+## Configuración y recursos compartidos
 
-| Parámetro | Valor |
-| --- | ---: |
-| Kp pan/tilt | 0.50 |
-| Comando máximo pan/tilt | 0.35 |
-| Velocidad física máxima pan/tilt automático | 0.30 |
-| Velocidad máxima pan/tilt manual | 0.75 |
-| Confianza mínima de movimiento inicial | 0.50 |
-| Frames visibles mínimos | 3 |
-| Intervalo mínimo entre comandos | 200 ms |
-| Continuación tras pérdida temporal | 300 ms |
-| Dead zone X/Y | ±0.10 |
+`config.settings` valida una vez y la composición inyecta ajustes. Las únicas
+excepciones heredadas son opciones de FFmpeg requeridas por OpenCV y la lectura
+dinámica de secretos en el filtro de logs. Los adaptadores se construyen con
+argumentos explícitos y no importan módulos de `ptz_test`.
 
-El zoom automático permanece en 0.00. El zoom manual permite velocidades de
-−0.30 a +0.30 cuando el backend anuncia continuous_zoom, con los mismos
-interlocks de video, entrada renovada, parada y watchdog que pan/tilt.
+`.venv` y `model` son enlaces a los recursos originales. El `.env` compartido se
+lee, no se modifica ni se copia. La precedencia es entorno de proceso, `.env`
+local y `.env` compartido. Los nuevos perfiles/ganancias viven en TOML.
 
-La pestaña Seguimiento permite modificar la confianza durante la sesión. Se
-aplica el mismo umbral a selección, decisiones y política de ejecución. El
-umbral de inferencia baja si es necesario para que no oculte candidatos con
-la confianza elegida. Las clases seleccionadas filtran tanto la adquisición
-como la asociación del objetivo; ninguna clase seleccionada pausa el automático.
+## Elección de lenguajes
 
-## Interlocks de seguridad
+Se conserva Python para el estado y la interfaz, donde importa reproducibilidad
+y uso del entorno existente. OpenCV ejecuta decodificación/visión en C++ y
+PyTorch usa sus kernels nativos CPU/CUDA. El núcleo de seguimiento usa sólo
+stdlib y dataclasses con slots; su coste medido con datos sintéticos es pequeño
+frente a la inferencia del modelo existente.
 
-El control tiene dos compuertas independientes:
+No hay una extensión C++ nueva ni un proceso extra que copie cada frame entre
+intérpretes. Cambiar aritmética a otro lenguaje no reduce codificación, red ni
+latencia mecánica. Si una medición futura identifica una sección Python dominante,
+las interfaces de mensajes permiten sustituir esa implementación sin rehacer Tk.
 
-1. DETECTCAM_PTZ_HARDWARE_ENABLED=false evita incluso crear el backend.
-2. Cuando se habilita hardware, el ejecutor sigue DISARMED hasta que el usuario
-   pulsa Armar PTZ (o F2), sin un popup adicional.
-
-La interfaz se crea antes de intentar conectar el backend PTZ. Si la cámara no
-responde, OperatorControl reintenta la conexión en su hilo con una pausa de
-2 segundos entre fallos; RTSPStream busca video de forma independiente. La UI
-muestra la falta de señal y los eventos registran los intentos y la recuperación.
-El ejecutor conectado inicia desarmado y descarta armados pendientes, por lo que
-recibir señal no reanuda órdenes anteriores.
-
-El modo inicial es manual. Cambiar de modo desarma y descarta las órdenes
-manuales; el modo automático requiere volver a armar. La cruceta pasa por una
-política manual que exige hardware, armado, backend compatible, video mostrado
-reciente y renovación de la pulsación cada 250 ms. No exige ni simula un target.
-La velocidad manual tiene un límite propio de 0.75; el seguimiento automático
-conserva el límite físico del perfil. Ambos usan rate limit, dead-man y watchdog.
-El teclado combina flechas y WASD; el zoom usa +/− del teclado numérico o la
-barra de velocidad con retorno a cero. Al soltar, perder foco, minimizar o cambiar
-de modo se descartan entradas pendientes. C/V disparan captura y grabación una
-sola vez por pulsación, incluso con la repetición de teclado de X11.
-
-MediaStore conserva una cola limitada de capturas y un único grabador. El
-grabador utiliza el cuadro RTSP y su fecha de recepción local; escribe a los FPS
-anunciados por la cámara (25 de respaldo), repitiendo cuadros cuando corresponde
-para conservar la duración. Finaliza al perder señal, cambiar resolución, recibir
-una parada o cerrar la aplicación. Nunca escribe video desde el callback de Tk
-ni desde inferencia. Las capturas opcionalmente incluyen anotaciones; el MP4
-siempre contiene video limpio y no incluye audio.
-
-Además:
-
-- d detiene y desarma;
-- ESPACIO ejecuta la parada de emergencia;
-- el dead-man detiene movimientos continuos demasiado largos;
-- el watchdog detiene el sistema si deja de recibir actualizaciones válidas;
-- targets o frames antiguos, baja confianza y pocos frames visibles producen
-  HOLD o STOP;
-- el cierre normal o una excepción intentan detener la cámara.
-
-## Selección del backend
-
-La fábrica acepta auto, isapi y onvif. En auto, ISAPI es el backend
-principal. ONVIF sólo se usa si falla la conexión inicial de ISAPI. No existe
-fallback después de enviar una orden: repetir un movimiento tras un timeout
-podría duplicarlo.
-
-## Configuración y secretos
-
-`main.py` carga automáticamente `.env` desde la raíz antes de importar el pipeline.
-Las variables ya presentes en el entorno tienen prioridad. `ptz/config.py` valida
-los campos comunes, resuelve rutas relativas contra la raíz y configura redacción
-de secretos en logging. `.env.example` documenta valores sin credenciales y
-`.env` está excluido por `.gitignore`.
-
-## Trabajo futuro
-
-- evaluar aceleración con hardware AMD compatible;
-- revalidar perfiles más rápidos con un protocolo comparable;
-- diseñar y habilitar Position3D sólo con interlocks propios;
-- evaluar autozoom;
-- implementar búsqueda al perder definitivamente el objetivo;
-- ampliar pruebas de integración sin cámara y con backends simulados;
-
-## Interfaz y concurrencia
-
-Tk sólo se usa desde el hilo principal. La vista previa lee el último cuadro
-RTSP con su timestamp atómico, sin esperar a YOLO. El hilo de visión publica
-sus anotaciones y datos en un buzón de una posición; el hilo de control es el único
-que invoca al ejecutor para acciones manuales y automáticas. Las edades de las
-decisiones crecen aunque YOLO no publique resultados; la edad del cuadro
-procesado incluye el tiempo de inferencia. El control manual también comprueba
-la edad del cuadro que la interfaz llegó a mostrar.
-
-Los callbacks gráficos no hacen peticiones de red. El cierre detiene primero
-el control físico, luego el stream y el procesamiento, y finalmente las
-métricas. El registro gráfico usa la misma redacción de credenciales y limita
-tanto su búfer como su texto visible a 2 000 líneas.
-
-La recepción usa un hilo de decodificación FFmpeg y un sondeo acotado. Las
-anotaciones caducan a los 250 ms; la vista en vivo puede continuar mientras
-YOLO procesa. El timestamp de recepción es local y no mide la demora previa
-del codificador de cámara ni de la red. Véase [LATENCIA.md](LATENCIA.md).
+La propuesta no cambia el modelo ni exporta pesos automáticamente. Una evaluación
+ONNX/TensorRT debe usar el hardware disponible y secuencias de drones para medir
+velocidad y precisión; no se promete ganancia con una exportación no probada.
