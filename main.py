@@ -19,8 +19,9 @@ def main() -> int:
         return 2
 
     LOGGER.info(
-        "Configuración validada; modelo=%s; PTZ físico=%s",
-        configuration.model_path,
+        "Configuración validada; detector=%s; modelo=%s; PTZ físico=%s",
+        configuration.detector_backend,
+        configuration.classifier_path if configuration.detector_backend == "svm" else configuration.model_path,
         "habilitado (inicia desarmado)" if configuration.hardware_enabled else "deshabilitado",
     )
     # Importación diferida: el preflight termina antes de cargar OpenCV, NumPy,

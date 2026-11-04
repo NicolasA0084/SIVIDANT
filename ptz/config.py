@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 from typing import Mapping, MutableMapping
 
+from ptz.model_artifact import ModelArtifactError, validate_model_artifact
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
@@ -28,10 +30,14 @@ class StartupConfiguration:
 
     project_root: Path
     env_file: Path
-    model_path: Path
+    model_path: Path | None
     camera_host: str
     hardware_enabled: bool
     ptz_backend: str
+    classifier_path: Path | None = None
+    classifier_features_path: Path | None = None
+    classifier_labels_path: Path | None = None
+    detector_backend: str = "yolo"
 
 
 _INTEGER_FIELDS = {
@@ -41,6 +47,7 @@ _INTEGER_FIELDS = {
     "DETECTCAM_ONVIF_PORT": (1, 65535),
     "DETECTCAM_PTZ_CHANNEL": (1, None),
     "DETECTCAM_IMGSZ": (1, None),
+    "DETECTCAM_SVM_SCAN_WIDTH": (32, 1920),
     "DETECTCAM_TRACK_MAX_MISSED_FRAMES": (0, None),
     "DETECTCAM_PTZ_LOST_COAST_MS": (0, None),
     "DETECTCAM_PTZ_MAX_CONTINUOUS_MS": (1, None),
@@ -190,18 +197,42 @@ def validate_startup_configuration(
             "DETECTCAM_PTZ_BACKEND debe ser auto, isapi u onvif."
         )
 
-    model_setting = values.get("DETECTCAM_MODEL_PATH", "model/best.pt").strip()
-    if not model_setting:
-        raise ConfigurationError("DETECTCAM_MODEL_PATH no puede estar vacío.")
-    model_path = Path(model_setting).expanduser()
-    if not model_path.is_absolute():
-        model_path = root / model_path
-    model_path = model_path.resolve()
-    if not model_path.is_file():
-        raise ConfigurationError(
-            f"No se encontró el modelo YOLO en {model_path}. "
-            "Descargue o copie los pesos y ajuste DETECTCAM_MODEL_PATH."
-        )
+    detector_backend = values.get("DETECTCAM_DETECTOR", "yolo").strip().lower()
+    if detector_backend not in {"yolo", "svm"}:
+        raise ConfigurationError("DETECTCAM_DETECTOR debe ser yolo o svm.")
+    model_path = None
+    if detector_backend == "yolo":
+        model_setting = values.get("DETECTCAM_MODEL_PATH", "model/best.pt").strip()
+        if not model_setting:
+            raise ConfigurationError("DETECTCAM_MODEL_PATH no puede estar vacío.")
+        model_path = Path(model_setting).expanduser()
+        if not model_path.is_absolute():
+            model_path = root / model_path
+        model_path = model_path.resolve()
+        try:
+            validate_model_artifact(model_path)
+        except ModelArtifactError as error:
+            raise ConfigurationError(str(error)) from error
+
+    classifier_names = (
+        "DETECTCAM_CLASSIFIER_PATH",
+        "DETECTCAM_CLASSIFIER_FEATURES_PATH",
+        "DETECTCAM_CLASSIFIER_LABELS_PATH",
+    )
+    classifier_paths: dict[str, Path] = {}
+    if detector_backend == "svm" or any(values.get(name, "").strip() for name in classifier_names):
+        for name in classifier_names:
+            setting = values.get(name, "").strip()
+            if not setting:
+                raise ConfigurationError(
+                    f"Falta {name}; el clasificador necesita el modelo, la función "
+                    "extract_features y el mapa de clases. Consulte docs/MODELO_JOBLIB.md."
+                )
+            path = Path(setting).expanduser()
+            path = (path if path.is_absolute() else root / path).resolve()
+            if not path.is_file():
+                raise ConfigurationError(f"No se encontró el archivo de {name}: {path}.")
+            classifier_paths[name] = path
 
     hardware_enabled = _boolean(
         "DETECTCAM_PTZ_HARDWARE_ENABLED",
@@ -214,6 +245,10 @@ def validate_startup_configuration(
         camera_host=host,
         hardware_enabled=hardware_enabled,
         ptz_backend=backend,
+        classifier_path=classifier_paths.get(classifier_names[0]),
+        classifier_features_path=classifier_paths.get(classifier_names[1]),
+        classifier_labels_path=classifier_paths.get(classifier_names[2]),
+        detector_backend=detector_backend,
     )
 
 
@@ -232,7 +267,16 @@ def bootstrap_environment(
     )
     # Los módulos existentes siguen consumiendo el entorno. Publicar la ruta ya
     # resuelta elimina la dependencia respecto del cwd sin duplicar ajustes.
-    destination["DETECTCAM_MODEL_PATH"] = str(configuration.model_path)
+    destination["DETECTCAM_DETECTOR"] = configuration.detector_backend
+    if configuration.model_path is not None:
+        destination["DETECTCAM_MODEL_PATH"] = str(configuration.model_path)
+    for name, resolved in (
+        ("DETECTCAM_CLASSIFIER_PATH", configuration.classifier_path),
+        ("DETECTCAM_CLASSIFIER_FEATURES_PATH", configuration.classifier_features_path),
+        ("DETECTCAM_CLASSIFIER_LABELS_PATH", configuration.classifier_labels_path),
+    ):
+        if resolved is not None:
+            destination[name] = str(resolved)
     return configuration
 
 

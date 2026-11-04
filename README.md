@@ -12,6 +12,8 @@ armado requiere pulsar **Armar PTZ**, sin un diálogo de confirmación adicional
 
 - adquisición RTSP en segundo plano y reconexión;
 - inferencia con un modelo local de Ultralytics YOLO;
+- clasificación opcional de recortes YOLO con un pipeline scikit-learn `.joblib`;
+- detección opcional solo SVM con ventanas HOG/HSV multiescala y confianza calibrada;
 - selección y tracking temporal de un objetivo;
 - cálculo y visualización de decisiones PTZ;
 - interfaz con video limpio, registro plegable y control manual/automático;
@@ -35,6 +37,9 @@ ni Smart Tracking.
 Las versiones de `requirements.txt` son las dependencias directas comprobadas en
 el entorno Python 3.12 usado para esta revisión. PyTorch se instala por separado
 para elegir CPU o la variante CUDA apropiada.
+
+Para Steam Deck con Ubuntu 24.04 y GPU AMD, consulte la
+[guía de instalación y ejecución en CPU](docs/STEAM_DECK.md).
 
 ## Instalación inicial
 
@@ -218,6 +223,12 @@ También puede usar otra ubicación mediante `DETECTCAM_MODEL_PATH`. Las rutas
 relativas se resuelven desde la raíz del proyecto, incluso si VS Code ejecuta
 `main.py` con otro directorio de trabajo. Git ignora formatos comunes de pesos.
 
+Si dispone de un clasificador `model.joblib`, consulte
+[la guía de integración y uso](docs/MODELO_JOBLIB.md). Puede clasificar recortes
+YOLO o activar `DETECTCAM_DETECTOR=svm` para detectar sin YOLO mediante ventanas
+multiescala en CPU. El modo SVM necesita la copia calibrada del modelo; el
+extractor original y las etiquetas están incluidos en el código.
+
 ## Configuración
 
 Edite `.env`; se carga automáticamente al ejecutar el programa. No es necesario
@@ -231,8 +242,8 @@ Complete primero los datos de conexión y del modelo:
 | `DETECTCAM_CAMERA_IP` | IP o host de la cámara, sin protocolo ni ruta. |
 | `DETECTCAM_CAMERA_USER` | Usuario con acceso al video y, si se habilita, control PTZ. |
 | `DETECTCAM_CAMERA_PASSWORD` | Contraseña de ese usuario. |
-| `DETECTCAM_MODEL_PATH` | Archivo local de pesos de detección, por ejemplo `model/best.pt`. |
-| `DETECTCAM_DEVICE` | `cpu` o índice de GPU NVIDIA, por ejemplo `0`. |
+| `DETECTCAM_MODEL_PATH` | Archivo local de pesos, como `model/best.pt`, o directorio exportado `*_ncnn_model`. |
+| `DETECTCAM_DEVICE` | `cpu`, índice de GPU NVIDIA como `0`, o `vulkan:0` para un modelo NCNN en GPU AMD. Consulte [la guía de Steam Deck](docs/STEAM_DECK.md). |
 | `DETECTCAM_RTSP_CHANNEL` | Canal de video de la cámara; el valor inicial es `101`. |
 | `DETECTCAM_TARGET_CLASSES` | Nombres de clases presentes en sus pesos, separados por comas. |
 | `DETECTCAM_IMGSZ` | Tamaño de inferencia; empieza en `640`. |

@@ -24,9 +24,15 @@ htmlcov/
 *.onnx
 *.engine
 *.safetensors
+*.joblib
+model/*.calibration.json
+*_ncnn_model/
 datasets/
 dataset/
 data/
+# Caché local de entrenamiento; conservar su configuración pequeña.
+hog_hsv_features_v1/*
+!hog_hsv_features_v1/feature_config.json
 *.zip
 *.7z
 *.tar

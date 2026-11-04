@@ -1,0 +1,4 @@
+# Opcional: instalar después de requirements.txt para inferencia NCNN/Vulkan.
+# PNNX se fija a la versión que requiere Ultralytics 8.4.138.
+ncnn==1.0.20261020
+pnnx==20260526

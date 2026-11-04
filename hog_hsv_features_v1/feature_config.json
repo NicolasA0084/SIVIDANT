@@ -1,0 +1,62 @@
+{
+  "aspect_ratio": "preserved",
+  "canvas": [
+    64,
+    64
+  ],
+  "classifier_manifest_package_fingerprint": "fe54fab7182f2aa5d35c987558f3deddd35e684ad40377a074efc6d92b4a19c6",
+  "feature_dim": 1812,
+  "feature_version": "HOG_HSV_V1",
+  "hog": {
+    "block_norm": "L2-Hys",
+    "cells_per_block": [
+      2,
+      2
+    ],
+    "dimension": 1764,
+    "grayscale": true,
+    "orientations": 9,
+    "pixels_per_cell": [
+      8,
+      8
+    ],
+    "transform_sqrt": false
+  },
+  "hsv": {
+    "bins": {
+      "H": 16,
+      "S": 16,
+      "V": 16
+    },
+    "computed_on": "resized content before padding",
+    "dimension": 48,
+    "normalization": "each 1D channel histogram sums to 1 when nonempty",
+    "ranges": {
+      "H": [
+        0,
+        180
+      ],
+      "S": [
+        0,
+        256
+      ],
+      "V": [
+        0,
+        256
+      ]
+    }
+  },
+  "n_rows": 85140,
+  "padding": "BORDER_REFLECT_101; BORDER_REPLICATE fallback for 1-pixel dimension",
+  "parent_roi_dataset_fingerprint": "d25132b9afae3bc858d3470b0a6cc5253abf5085c7ba3d1596a6f4bdc3d7ce77",
+  "test_accessed": false,
+  "versions": {
+    "numpy": "2.5.3",
+    "opencv": "5.0.0",
+    "pandas": "3.0.5",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "scikit_image": "0.26.0",
+    "scikit_learn": "1.9.1"
+  }
+}

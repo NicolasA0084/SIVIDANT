@@ -1,0 +1,5 @@
+# Instalar además de requirements.txt. Versión registrada en model.joblib.
+scikit-learn==1.9.1
+joblib>=1.4.0,<2
+# Versión de la caché hog_hsv_features_v1/feature_config.json.
+scikit-image==0.26.0

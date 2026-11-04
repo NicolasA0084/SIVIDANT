@@ -12,6 +12,8 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
+from ptz.model_artifact import ModelArtifactError, validate_model_artifact
+
 LOGGER = logging.getLogger(__name__)
 DEFAULT_CONFIDENCE = 0.25
 DEFAULT_DEVICE = "cpu"
@@ -47,6 +49,7 @@ class Detection:
     y1: int
     x2: int
     y2: int
+    classification_margin: float | None = None
 
     @property
     def center_x(self) -> float:
@@ -83,11 +86,10 @@ class YOLODetector:
     ) -> None:
         configured_path = model_path or os.getenv("DETECTCAM_MODEL_PATH") or DEFAULT_MODEL_PATH
         self._model_path = Path(configured_path).expanduser().resolve()
-        if not self._model_path.is_file():
-            raise ModelLoadError(
-                f"No se encontró el modelo YOLO en: {self._model_path}. "
-                "Configure DETECTCAM_MODEL_PATH."
-            )
+        try:
+            validate_model_artifact(self._model_path)
+        except ModelArtifactError as error:
+            raise ModelLoadError(str(error)) from error
         self._confidence = self._validate_confidence(confidence)
         self._device = self._validate_device(device)
         self._imgsz = self._validate_imgsz(imgsz)
@@ -258,6 +260,9 @@ def draw_detections(
         cv2.rectangle(output, (detection.x1, detection.y1),
                       (detection.x2, detection.y2), (0, 255, 0), 2)
         label = f"{detection.class_name} {detection.confidence:.2f}"
+        if detection.classification_margin is not None:
+            label = (f"{detection.class_name} YOLO:{detection.confidence:.2f} "
+                     f"SVM:{detection.classification_margin:+.2f}")
         cv2.putText(output, label, (detection.x1, max(20, detection.y1 - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     return output

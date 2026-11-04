@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import logging
+import os
 from math import isfinite
 from time import monotonic, perf_counter
 import threading
@@ -19,6 +20,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ptz.detector import Detection, DetectorError, InferenceError, YOLODetector
+from ptz.joblib_classifier import ClassifyingDetector, with_optional_classifier
+from ptz.svm_detector import SVMDetector
 from ptz.preview import PreviewAnnotations
 from ptz.stream import RTSPStream, StreamConfigurationError
 from ptz.ptz_decision import (
@@ -403,7 +406,7 @@ def record_ptz_metrics(
 
 
 def run_detection_loop(
-    stream: RTSPStream, detector: YOLODetector, selector: TargetSelector,
+    stream: RTSPStream, detector: YOLODetector | ClassifyingDetector | SVMDetector, selector: TargetSelector,
     tracker: TargetTracker, decision_engine: PTZDecisionEngine,
     metrics: PTZMetrics, control, mailbox, stop_event: threading.Event,
     tracking_options: TrackingOptions | None = None,
@@ -530,11 +533,14 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    LOGGER.info("Iniciando Detectcam: RTSP + detección YOLO")
+    LOGGER.info("Iniciando Detectcam: RTSP + detector %s", os.getenv("DETECTCAM_DETECTOR", "yolo"))
     try:
         tuning = PTZTuningConfiguration.from_environment()
         stream = RTSPStream.from_environment()
-        detector = YOLODetector.from_environment()
+        if os.getenv("DETECTCAM_DETECTOR", "yolo").strip().lower() == "svm":
+            detector = SVMDetector.from_environment()
+        else:
+            detector = with_optional_classifier(YOLODetector.from_environment())
         selector = TargetSelector.from_environment(
             default_classes=detector.class_names.values()
         )

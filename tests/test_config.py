@@ -42,6 +42,41 @@ class ConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(configuration.model_path, self.root / "model" / "best.pt")
 
+    def test_bootstrap_accepts_exported_ncnn_directory(self) -> None:
+        model = self.root / "model" / "best_ncnn_model"
+        model.mkdir()
+        (model / "model.ncnn.param").write_bytes(b"parameters")
+        (model / "model.ncnn.bin").write_bytes(b"weights")
+        values = dict(self.env, DETECTCAM_MODEL_PATH="model/best_ncnn_model")
+        env_file = self.root / ".env"
+        env_file.touch()
+        configuration = bootstrap_environment(
+            env_file, environ=values, project_root=self.root
+        )
+        self.assertEqual(configuration.model_path, model)
+        self.assertEqual(values["DETECTCAM_MODEL_PATH"], str(model))
+
+    def test_invalid_ncnn_exports_fail_before_startup(self) -> None:
+        cases = (
+            ("empty_ncnn_model", (), "exactamente un archivo .param"),
+            ("missing_ncnn_model", ("model.ncnn.param",), "falta .*model.ncnn.bin"),
+            (
+                "ambiguous_ncnn_model",
+                ("first.param", "first.bin", "second.param", "second.bin"),
+                "exactamente un archivo .param",
+            ),
+            ("unsupported_directory", ("model.param", "model.bin"), "nombre .*_ncnn_model"),
+        )
+        for name, files, message in cases:
+            model = self.root / "model" / name
+            model.mkdir()
+            for filename in files:
+                (model / filename).write_bytes(b"placeholder")
+            with self.subTest(name=name), self.assertRaisesRegex(ConfigurationError, message):
+                validate_startup_configuration(
+                    dict(self.env, DETECTCAM_MODEL_PATH=str(model)), project_root=self.root
+                )
+
     def test_missing_required_fields_are_reported_together(self) -> None:
         with self.assertRaisesRegex(
             ConfigurationError,
@@ -50,6 +85,59 @@ class ConfigurationTests(unittest.TestCase):
             validate_startup_configuration(
                 {"DETECTCAM_CAMERA_IP": "192.0.2.10"}, project_root=self.root
             )
+
+    def test_joblib_classifier_cannot_replace_yolo_weights(self) -> None:
+        model = self.root / "model" / "model.joblib"
+        model.touch()
+        with self.assertRaisesRegex(ConfigurationError, "DETECTCAM_CLASSIFIER_PATH"):
+            validate_startup_configuration(
+                dict(self.env, DETECTCAM_MODEL_PATH=str(model)), project_root=self.root,
+            )
+
+    def test_optional_classifier_requires_all_three_files(self) -> None:
+        model = self.root / "model" / "model.joblib"
+        model.touch()
+        with self.assertRaisesRegex(ConfigurationError, "DETECTCAM_CLASSIFIER_FEATURES_PATH"):
+            validate_startup_configuration(
+                dict(self.env, DETECTCAM_CLASSIFIER_PATH=str(model)), project_root=self.root,
+            )
+
+    def test_svm_mode_needs_no_yolo_weights(self) -> None:
+        values = dict(self.env, DETECTCAM_DETECTOR="svm", DETECTCAM_MODEL_PATH="missing.pt")
+        for variable, name in (
+            ("DETECTCAM_CLASSIFIER_PATH", "model.joblib"),
+            ("DETECTCAM_CLASSIFIER_FEATURES_PATH", "features.py"),
+            ("DETECTCAM_CLASSIFIER_LABELS_PATH", "classes.json"),
+        ):
+            (self.root / "model" / name).touch()
+            values[variable] = f"model/{name}"
+        configuration = validate_startup_configuration(values, project_root=self.root)
+        self.assertEqual(configuration.detector_backend, "svm")
+        self.assertIsNone(configuration.model_path)
+
+    def test_invalid_detector_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "DETECTCAM_DETECTOR"):
+            validate_startup_configuration(dict(self.env, DETECTCAM_DETECTOR="other"), project_root=self.root)
+
+    def test_svm_mode_requires_the_classifier_files(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "DETECTCAM_CLASSIFIER_PATH"):
+            validate_startup_configuration(dict(self.env, DETECTCAM_DETECTOR="svm"), project_root=self.root)
+
+    def test_bootstrap_resolves_classifier_files_from_project_root(self) -> None:
+        values = dict(self.env)
+        for variable, name in (
+            ("DETECTCAM_CLASSIFIER_PATH", "model.joblib"),
+            ("DETECTCAM_CLASSIFIER_FEATURES_PATH", "features.py"),
+            ("DETECTCAM_CLASSIFIER_LABELS_PATH", "classes.json"),
+        ):
+            (self.root / "model" / name).touch()
+            values[variable] = f"model/{name}"
+        env_file = self.root / ".env"
+        env_file.touch()
+        configuration = bootstrap_environment(env_file, environ=values, project_root=self.root)
+        self.assertEqual(configuration.classifier_path, self.root / "model" / "model.joblib")
+        self.assertEqual(values["DETECTCAM_CLASSIFIER_FEATURES_PATH"], str(self.root / "model" / "features.py"))
+        self.assertEqual(values["DETECTCAM_CLASSIFIER_LABELS_PATH"], str(self.root / "model" / "classes.json"))
 
     def test_invalid_boolean_is_rejected(self) -> None:
         values = dict(self.env, DETECTCAM_PTZ_HARDWARE_ENABLED="quizas")

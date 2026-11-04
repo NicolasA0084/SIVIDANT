@@ -127,6 +127,24 @@ class PipelineTests(unittest.TestCase):
         stream.stop.assert_called_once()
         metrics.close.assert_called_once()
 
+    def test_svm_startup_does_not_create_a_yolo_detector(self):
+        import tkinter as tk
+
+        stream = Mock()
+        detector = Mock()
+        detector.class_names = {0: "drone"}
+        metrics = Mock(enabled=False)
+        with patch.dict("os.environ", {"DETECTCAM_DETECTOR": "svm"}, clear=True), \
+                patch("ptz.main.RTSPStream.from_environment", return_value=stream), \
+                patch("ptz.main.SVMDetector.from_environment", return_value=detector) as svm_factory, \
+                patch("ptz.main.YOLODetector.from_environment") as yolo_factory, \
+                patch("ptz.main.PTZMetrics.from_environment", return_value=metrics), \
+                patch("ptz.ui.DetectcamDashboard", side_effect=tk.TclError("no display")):
+            self.assertEqual(main(), 1)
+        svm_factory.assert_called_once()
+        yolo_factory.assert_not_called()
+        stream.stop.assert_called_once()
+
     def test_dashboard_runs_while_camera_hardware_connection_is_blocked(self):
         entered, release = threading.Event(), threading.Event()
         stream = Mock()
